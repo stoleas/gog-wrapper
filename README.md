@@ -1,10 +1,10 @@
 # gog-wrapper
 
-Bash wrappers around [`gog`](https://github.com/dghubble/gog) for Google Workspace CLI access — Gmail, Calendar, Drive, Docs, and Sheets.
+Bash wrappers around [`gogcli`](https://github.com/steipete/gogcli) for Google Workspace CLI access — Gmail, Calendar, Drive, Docs, and Sheets.
 
 ## Requirements
 
-- [`gog`](https://github.com/dghubble/gog) must be installed and in `PATH`
+- [`gogcli`](https://github.com/steipete/gogcli) installed as `gog` and in `PATH`
 - A `vars.sh` file (see [Configuration](#configuration))
 
 ## Configuration
