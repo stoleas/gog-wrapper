@@ -288,7 +288,7 @@ function find_drive_folder() {
 
 function list_drive_images() {
     local folder_id="$1"
-    gog drive ls --parent "$folder_id" --json --results-only 2>/dev/null | \
+    gog drive ls --parent "$folder_id" --max 1000 --json --results-only 2>/dev/null | \
         jq -r '.[] | select(.mimeType | test("^image/")) | [.id, .name, .mimeType] | @tsv'
 }
 
@@ -308,25 +308,47 @@ function download_image_file() {
     return 0
 }
 
+function find_sheet_by_name() {
+    local name="$1"
+    gog drive search "name = '$name' and mimeType = 'application/vnd.google-apps.spreadsheet'" \
+        --json --results-only --max 5 2>/dev/null | jq -r '.[0].id // empty'
+}
+
 function create_auction_sheet() {
-    local sheet_name="$1" lots_json="$2"
+    local sheet_name="$1" lots_json="$2" items_json="$3"
 
-    log_step "Creating spreadsheet: $sheet_name"
-    local sheet_id
-    sheet_id=$(gog sheets create "$sheet_name" --json --results-only 2>/dev/null | jq -r '.spreadsheetId // empty')
-    if [[ -z "$sheet_id" ]]; then
-        log_error "Failed to create spreadsheet"
-        return 1
+    # Reuse existing sheet if one with this name already exists
+    local sheet_id existing
+    existing=$(find_sheet_by_name "$sheet_name")
+
+    if [[ -n "$existing" ]]; then
+        log_ok "Found existing sheet '$sheet_name' ($existing) — appending"
+        sheet_id="$existing"
+    else
+        log_step "Creating spreadsheet: $sheet_name"
+        sheet_id=$(gog sheets create "$sheet_name" --json --results-only 2>/dev/null | jq -r '.spreadsheetId // empty')
+        if [[ -z "$sheet_id" ]]; then
+            log_error "Failed to create spreadsheet"
+            return 1
+        fi
+        log_ok "Created sheet: $sheet_id"
+
+        local headers='[["Lot #","Category","Item Name","Brand","Qty","Condition","Description","eBay Low","eBay High","Etsy Low","Etsy High","Other Markets","Rec. Low","Rec. High","Pricing Notes","Keywords","Photo Links"]]'
+        gog sheets update "$sheet_id" "Sheet1!A1:Q1" \
+            --values-json "$headers" --input USER_ENTERED >/dev/null 2>&1
     fi
-    log_ok "Created sheet: $sheet_id"
 
-    local headers='[["Lot #","Category","Item Name","Brand","Qty","Condition","Description","eBay Low","eBay High","Etsy Low","Etsy High","Other Markets","Rec. Low","Rec. High","Pricing Notes","Keywords","Photos"]]'
-    gog sheets update "$sheet_id" "Sheet1!A1:Q1" \
-        --values-json "$headers" --input USER_ENTERED >/dev/null 2>&1
+    # Build filename -> Drive URL map from items_json
+    local url_map
+    url_map=$(printf "%s" "$items_json" | jq '
+        [.[] | {key: .filename, value: ("https://drive.google.com/file/d/" + .file_id + "/view")}]
+        | from_entries
+    ')
 
     local rows
-    rows=$(printf "%s" "$lots_json" | jq '[
-        .[] | [
+    rows=$(printf "%s" "$lots_json" | jq \
+        --argjson urls "$url_map" '
+        [.[] | [
             (.lot_number | tostring),
             .category,
             .item_name,
@@ -343,9 +365,12 @@ function create_auction_sheet() {
             ("$" + (.recommended_high | tostring)),
             (.pricing_notes // ""),
             (.keywords // [] | join(", ")),
-            (.photo_files // [] | join(", "))
-        ]
-    ]')
+            # Build one HYPERLINK formula per photo, newline-separated
+            (.photo_files // [] |
+                map(. as $f | "=HYPERLINK(\"" + ($urls[$f] // "") + "\",\"" + $f + "\")")
+                | join("\n"))
+        ]]
+    ')
 
     if [[ -z "$rows" || "$rows" == "[]" ]]; then
         log_error "No rows to write to sheet"
@@ -508,7 +533,7 @@ function main() {
 
     # --- Step 3: Create spreadsheet ---
     local sheet_id
-    sheet_id=$(create_auction_sheet "$sheet_name" "$lots_json")
+    sheet_id=$(create_auction_sheet "$sheet_name" "$lots_json" "$items_json")
     if [[ -z "$sheet_id" ]]; then
         log_error "Spreadsheet creation failed"
         exit 1
