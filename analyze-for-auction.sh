@@ -328,9 +328,17 @@ function create_auction_sheet() {
         sheet_id="$existing"
     else
         log_step "Creating spreadsheet: $sheet_name"
-        sheet_id=$(gog sheets create "$sheet_name" --json --results-only 2>/dev/null | jq -r '.spreadsheetId // empty')
+        local create_output
+        create_output=$(gog sheets create "$sheet_name" --json 2>&1)
+        log_info "sheets create raw output: $create_output"
+        sheet_id=$(printf "%s" "$create_output" | jq -r '
+            .spreadsheetId //
+            .result.spreadsheetId //
+            .data.spreadsheetId //
+            (.[] | .spreadsheetId?) //
+            empty' 2>/dev/null)
         if [[ -z "$sheet_id" ]]; then
-            log_error "Failed to create spreadsheet"
+            log_error "Failed to create spreadsheet. Raw output: $create_output"
             return 1
         fi
         log_ok "Created sheet: $sheet_id"
