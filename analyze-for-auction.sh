@@ -362,20 +362,22 @@ Output ONLY a raw JSON array — no markdown, no explanation:
                 printf "%s" "$text" >> "./lots_raw_${FOLDER_NAME}.txt"
                 local fallback_batch
                 fallback_batch=$(printf "%s" "$batch_groups" | jq '
-                    [.[] | {
-                        lot_number: .group_id,
-                        item_name: (.analyses[0].analysis.item_name // "Unknown Item"),
-                        category: (.analyses[0].analysis.category // "Other"),
-                        brand: (.analyses[0].analysis.brand // "Unknown"),
-                        quantity: (.photo_files | length),
-                        condition: (.analyses[0].analysis.condition // "Unknown"),
-                        description: (.analyses[0].analysis.description // ""),
-                        ebay_low: 0, ebay_high: 0, etsy_low: 0, etsy_high: 0,
-                        other_markets: "",
-                        recommended_low: 0, recommended_high: 0,
-                        pricing_notes: "Manual pricing required",
-                        keywords: (.analyses[0].analysis.keywords // [])
-                    }]
+                    [.[] |
+                        (.analyses[0].analysis | if type == "object" then . else {} end) as $a |
+                        {
+                            lot_number: .group_id,
+                            item_name: ($a.item_name // "Unknown Item"),
+                            category: ($a.category // "Other"),
+                            brand: ($a.brand // "Unknown"),
+                            quantity: (.photo_files | length),
+                            condition: ($a.condition // "Unknown"),
+                            description: ($a.description // ""),
+                            ebay_low: 0, ebay_high: 0, etsy_low: 0, etsy_high: 0,
+                            other_markets: "",
+                            recommended_low: 0, recommended_high: 0,
+                            pricing_notes: "Manual pricing required",
+                            keywords: ($a.keywords // [])
+                        }]
                 ')
                 all_lots=$(printf "%s\n%s" "$all_lots" "$fallback_batch" | jq -s 'add')
             fi
@@ -395,8 +397,26 @@ Output ONLY a raw JSON array — no markdown, no explanation:
         '[.[] | . + {photo_files: ($gmap[.lot_number | tostring] // [])}]')
 
     if [[ -z "$all_lots" ]] || ! printf "%s" "$all_lots" | jq -e 'arrays | length > 0' &>/dev/null; then
-        log_warn "All batches failed — falling back to one lot per item"
-        lots_from_analysis "$items_json"
+        log_warn "All batches failed — falling back to one lot per timestamp group"
+        printf "%s" "$groups_json" | jq '
+            [.[] |
+                (.analyses[0].analysis | if type == "object" then . else {} end) as $a |
+                {
+                    lot_number: .group_id,
+                    item_name: ($a.item_name // "Unknown Item"),
+                    category: ($a.category // "Other"),
+                    brand: ($a.brand // "Unknown"),
+                    quantity: (.photo_files | length),
+                    condition: ($a.condition // "Unknown"),
+                    description: ($a.description // ""),
+                    ebay_low: 0, ebay_high: 0, etsy_low: 0, etsy_high: 0,
+                    other_markets: "",
+                    recommended_low: 0, recommended_high: 0,
+                    pricing_notes: "Manual pricing required",
+                    keywords: ($a.keywords // []),
+                    photo_files: .photo_files
+                }]
+        '
         return 0
     fi
 
