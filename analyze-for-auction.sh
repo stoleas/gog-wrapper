@@ -39,7 +39,9 @@ flags:
         --sheet-name <name>       Name for the output spreadsheet (default: "Auction - <folder>")
         --share <emails>          Share the sheet with comma-separated email addresses
         --share-role <role>       Share role: reader|commenter|writer (default: writer)
-        --model <name>            Ollama model to use (default: $DEFAULT_OLLAMA_MODEL)
+        --model <name>            Vision model for image analysis (default: $DEFAULT_OLLAMA_MODEL)
+        --text-model <name>       Text model for grouping/pricing (default: same as --model)
+                                  Use a stronger text model e.g. qwen3.5:9b for better results
         --ollama-host <url>       Ollama host (default: $DEFAULT_OLLAMA_HOST)
         --resume <analysis.json>  Skip photo analysis; resume from a saved analysis file
     -n, --dry-run                 Analyze photos but don't create the spreadsheet
@@ -239,10 +241,11 @@ function group_and_price() {
 
     items_summary=$(printf "%s" "$items_json" | jq -r '
         to_entries | .[] |
+        (.value.analysis | if type == "object" then . else {} end) as $a |
         ((.key + 1) | tostring) + ". [" + .value.filename + "]: " +
-        (.value.analysis.item_name // "unknown") + ", " +
-        (.value.analysis.brand // "unknown brand") + ", condition: " +
-        (.value.analysis.condition // "unknown")
+        ($a.item_name // "unknown") + ", " +
+        ($a.brand // "unknown brand") + ", condition: " +
+        ($a.condition // "unknown")
     ')
     item_count=$(printf "%s" "$items_json" | jq 'length')
 
@@ -411,15 +414,17 @@ function main() {
     local sheet_name="" resume_file="" dry_run="false" no_input="false" account=""
     local ollama_host="${OLLAMA_HOST:-$DEFAULT_OLLAMA_HOST}"
     local ollama_model="${OLLAMA_MODEL:-$DEFAULT_OLLAMA_MODEL}"
+    local ollama_text_model=""
     local share_emails="" share_role="writer"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --sheet-name)   sheet_name="$2";     shift ;;
-            --share)        share_emails="$2";   shift ;;
-            --share-role)   share_role="$2";     shift ;;
-            --model)        ollama_model="$2";   shift ;;
-            --ollama-host)  ollama_host="$2";    shift ;;
+            --sheet-name)   sheet_name="$2";         shift ;;
+            --share)        share_emails="$2";       shift ;;
+            --share-role)   share_role="$2";         shift ;;
+            --model)        ollama_model="$2";       shift ;;
+            --text-model)   ollama_text_model="$2";  shift ;;
+            --ollama-host)  ollama_host="$2";        shift ;;
             --resume)       resume_file="$2";    shift ;;
             -n|--dry-run)   dry_run="true" ;;
             --no-input)     no_input="true" ;;
@@ -432,11 +437,18 @@ function main() {
     [[ -n "$account" ]] && export GOG_ACCOUNT="$account"
     export GOG_ACCOUNT="${GOG_ACCOUNT:-${DEFAULT_GOG_ACCOUNT}}"
     [[ -z "$sheet_name" ]] && sheet_name="Auction - $folder_name"
+    # Default text model to vision model if not separately specified
+    [[ -z "$ollama_text_model" ]] && ollama_text_model="$ollama_model"
 
-    # Verify Ollama is up and model is available
-    log_step "Checking Ollama at $ollama_host (model: $ollama_model)..."
+    # Verify Ollama is up and both models are available
+    log_step "Checking Ollama at $ollama_host (vision: $ollama_model, text: $ollama_text_model)..."
     if ! check_ollama "$ollama_host" "$ollama_model"; then
         exit 1
+    fi
+    if [[ "$ollama_text_model" != "$ollama_model" ]]; then
+        if ! check_ollama "$ollama_host" "$ollama_text_model"; then
+            exit 1
+        fi
     fi
     log_ok "Ollama ready"
 
@@ -522,7 +534,7 @@ function main() {
     # --- Step 2: Grouping + market pricing ---
     log_step "Grouping items and researching market prices (this may take a few minutes)..."
     local lots_json
-    lots_json=$(group_and_price "$ollama_host" "$ollama_model" "$items_json")
+    lots_json=$(group_and_price "$ollama_host" "$ollama_text_model" "$items_json")
 
     if [[ -z "$lots_json" ]] || ! printf "%s" "$lots_json" | jq -e 'arrays' &>/dev/null; then
         log_error "Failed to get valid lots from model — check ./lots_raw_${folder_name}.txt"
