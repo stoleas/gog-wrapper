@@ -238,18 +238,16 @@ function lots_from_analysis() {
     ]'
 }
 
-# Expand each lot's photo_files using 60-second timestamp proximity.
-# The model often omits photos — this catches everything the model missed by
-# assigning unassigned files to whichever lot's photos are nearest in time.
-function enrich_photo_files() {
-    local items_json="$1" lots_json="$2"
-    local items_file lots_file result
+# Deterministically group items into candidate lots using timestamp proximity.
+# Photos taken within window_secs of each other = same item photographed from
+# multiple angles. Returns JSON: [{group_id, photo_files, analyses}]
+function pre_group_by_timestamp() {
+    local items_json="$1" window="${2:-90}"
+    local items_file
     items_file=$(mktemp)
-    lots_file=$(mktemp)
     printf "%s" "$items_json" > "$items_file"
-    printf "%s" "$lots_json"  > "$lots_file"
 
-    result=$(python3 - "$items_file" "$lots_file" <<'PYEOF'
+    python3 - "$items_file" "$window" <<'PYEOF'
 import sys, json, re
 from datetime import datetime
 
@@ -264,45 +262,43 @@ def parse_ts(filename):
 
 with open(sys.argv[1]) as f:
     items = json.load(f)
-with open(sys.argv[2]) as f:
-    lots = json.load(f)
+window = float(sys.argv[2])
 
-fname_to_ts = {item['filename']: parse_ts(item['filename']) for item in items}
+timestamped, no_ts = [], []
+for item in items:
+    ts = parse_ts(item['filename'])
+    if ts is not None:
+        timestamped.append((ts, item))
+    else:
+        no_ts.append(item)
+timestamped.sort(key=lambda x: x[0])
 
-assigned = set()
-for lot in lots:
-    for fname in lot.get('photo_files', []):
-        assigned.add(fname)
+groups, current, last_ts = [], [], None
+for ts, item in timestamped:
+    if last_ts is None or (ts - last_ts) > window:
+        if current:
+            groups.append(current)
+        current = [(ts, item)]
+    else:
+        current.append((ts, item))
+    last_ts = ts
+if current:
+    groups.append(current)
+for item in no_ts:
+    groups.append([(None, item)])
 
-# Per-lot list of known timestamps (used to find nearest lot for unassigned photos)
-lot_ts = []
-for lot in lots:
-    ts_list = [fname_to_ts.get(f) for f in lot.get('photo_files', [])
-               if fname_to_ts.get(f) is not None]
-    lot_ts.append(ts_list)
-
-# Sort unassigned items by timestamp for deterministic assignment order
-unassigned = [(item['filename'], fname_to_ts.get(item['filename']))
-              for item in items if item['filename'] not in assigned]
-unassigned = sorted([(f, t) for f, t in unassigned if t is not None], key=lambda x: x[1])
-
-for fname, ts in unassigned:
-    best_idx, best_dist = None, float('inf')
-    for i, ts_list in enumerate(lot_ts):
-        for lot_t in ts_list:
-            dist = abs(ts - lot_t)
-            if dist < best_dist:
-                best_dist, best_idx = dist, i
-    # Only attach within 5-minute window to avoid cross-lot bleed
-    if best_idx is not None and best_dist <= 300:
-        lots[best_idx]['photo_files'].append(fname)
-        lot_ts[best_idx].append(ts)
-
-print(json.dumps(lots))
+result = []
+for idx, group in enumerate(groups):
+    result.append({
+        'group_id': idx + 1,
+        'photo_files': [item['filename'] for _, item in group],
+        'analyses': [{'filename': item['filename'], 'analysis': item.get('analysis', {}), 'file_id': item.get('file_id', '')} for _, item in group]
+    })
+print(json.dumps(result))
 PYEOF
-)
-    rm -f "$items_file" "$lots_file"
-    printf "%s" "$result"
+    local rc=$?
+    rm -f "$items_file"
+    return $rc
 }
 
 # Renumber lots 1..N regardless of what the model assigned.
@@ -312,59 +308,106 @@ function renumber_lots() {
 
 function group_and_price() {
     local host="$1" model="$2" items_json="$3"
-    local items_summary item_count prompt text extracted
+    local groups_json group_count
 
-    # Build summary with timestamps parsed from filenames (YYYYMMDD_HHMMSS)
-    # so the model can use proximity as a grouping hint.
-    # Normalize any array-valued fields to comma-joined strings.
-    items_summary=$(printf "%s" "$items_json" | jq -r '
-        def str: if type == "array" then join(", ") elif . == null then "?" else tostring end;
-        to_entries | .[] |
-        (.value.analysis | if type == "object" then . else {} end) as $a |
-        ((.key + 1) | tostring) + ". [" + .value.filename + "] " +
-        ($a.item_name | str) + " | " +
-        ($a.brand     | str) + " | " +
-        ($a.condition | str) + " | " +
-        ($a.color     | str) + " | " +
-        ($a.description | str)
-    ')
-    item_count=$(printf "%s" "$items_json" | jq 'length')
+    # Phase 1 — deterministic timestamp grouping (no model needed)
+    log_info "Pre-grouping photos by timestamp proximity..."
+    groups_json=$(pre_group_by_timestamp "$items_json" 90)
+    if [[ -z "$groups_json" ]]; then
+        log_warn "Timestamp grouping failed — falling back to one lot per item"
+        lots_from_analysis "$items_json"
+        return 0
+    fi
+    group_count=$(printf "%s" "$groups_json" | jq 'length')
+    log_info "$group_count candidate lot(s) after timestamp grouping"
 
-    prompt='You are an expert auction appraiser. I photographed items for sale — each item was photographed multiple times from different angles, so several consecutive filenames often show the SAME physical object.
+    # Phase 2 — ask model to name, describe, and price each pre-grouped candidate lot
+    # Model no longer needs to figure out which photos go together — that's already done.
+    # We batch into chunks of 25 so we never hit output token limits.
+    local all_lots="[]"
+    local batch_size=25
+    local total_groups="$group_count"
+    local start=0
 
-IMPORTANT GROUPING RULES:
-- Filenames are timestamps (YYYYMMDD_HHMMSS). Photos taken within ~60 seconds of each other very likely show the same item from different angles — group them together.
-- Also group items that are clearly identical (same model/color/brand) even if taken further apart.
-- Do NOT group different items together just because they are similar in category.
+    while [[ $start -lt $total_groups ]]; do
+        local batch_groups end_idx batch_summary prompt text extracted
+        end_idx=$(( start + batch_size - 1 ))
+        batch_groups=$(printf "%s" "$groups_json" | jq --argjson s "$start" --argjson e "$end_idx" '.[$s:($e+1)]')
 
-Items to group:
-'"$items_summary"'
+        # Build one line per candidate lot showing its analyses
+        batch_summary=$(printf "%s" "$batch_groups" | jq -r '
+            def str: if type == "array" then join(", ") elif . == null then "?" else tostring end;
+            .[] |
+            "Lot \(.group_id) (" + (.photo_files | length | tostring) + " photos): " +
+            (.analyses | map(
+                (.analysis | if type == "object" then . else {} end) as $a |
+                ($a.item_name | str) + " / " + ($a.brand | str) + " / " +
+                ($a.condition | str) + " / " + ($a.color | str)
+            ) | join(" | "))
+        ')
+        local batch_count
+        batch_count=$(printf "%s" "$batch_groups" | jq 'length')
 
-For each lot output ONE JSON object. Combine all photo filenames for that lot into photo_files[].
-Provide realistic eBay SOLD price ranges and a recommended auction price adjusted for condition.
+        prompt="You are an expert auction house appraiser. I have pre-grouped ${batch_count} auction lots by photograph timestamp — each lot already contains all photos of one physical item.
 
-Output ONLY a raw JSON array with no explanation, no markdown, no code fences:
-[{"lot_number":1,"item_name":"specific name","category":"category","brand":"brand or Unknown","quantity":1,"condition":"Excellent|Good|Fair|Poor","description":"compelling 3-4 sentence auction description","ebay_low":5.00,"ebay_high":25.00,"etsy_low":0.00,"etsy_high":0.00,"other_markets":"notes","recommended_low":8.00,"recommended_high":20.00,"pricing_notes":"justification","photo_files":["a.jpg","b.jpg"],"keywords":["tag"]}]'
+For each lot below, provide a name, description, and realistic eBay SOLD price range. Use only the lot numbers shown.
 
-    log_info "Sending $item_count items for grouping and pricing..."
-    text=$(ollama_chat "$host" "$model" "$prompt" "")
+${batch_summary}
 
-    if [[ -z "$text" ]]; then
-        log_warn "Empty response from model during grouping — falling back to one lot per item"
+Output ONLY a raw JSON array — no markdown, no explanation:
+[{\"lot_number\":1,\"item_name\":\"specific descriptive name\",\"category\":\"Electronics|Clothing|Tools|Collectibles|Jewelry|HomeDecor|Sports|Books|Toys|Kitchen|Furniture|Art|Other\",\"brand\":\"brand or Unknown\",\"quantity\":1,\"condition\":\"Excellent|Good|Fair|Poor\",\"description\":\"compelling 2-3 sentence auction listing\",\"ebay_low\":5.00,\"ebay_high\":25.00,\"etsy_low\":0.00,\"etsy_high\":0.00,\"other_markets\":\"\",\"recommended_low\":8.00,\"recommended_high\":20.00,\"pricing_notes\":\"brief justification\",\"keywords\":[\"tag\"]}]"
+
+        log_info "Pricing batch lots $((start+1))–$((start + batch_count)) of $total_groups..."
+        text=$(ollama_chat "$host" "$model" "$prompt" "")
+
+        if [[ -n "$text" ]]; then
+            extracted=$(extract_json "$text")
+            if [[ -n "$extracted" ]] && printf "%s" "$extracted" | jq -e 'arrays | length > 0' &>/dev/null; then
+                all_lots=$(printf "%s\n%s" "$all_lots" "$extracted" | jq -s 'add')
+            else
+                log_warn "Model returned invalid JSON for batch starting at $((start+1)) — using analysis fallback for this batch"
+                printf "%s" "$text" >> "./lots_raw_${FOLDER_NAME}.txt"
+                local fallback_batch
+                fallback_batch=$(printf "%s" "$batch_groups" | jq '
+                    [.[] | {
+                        lot_number: .group_id,
+                        item_name: (.analyses[0].analysis.item_name // "Unknown Item"),
+                        category: (.analyses[0].analysis.category // "Other"),
+                        brand: (.analyses[0].analysis.brand // "Unknown"),
+                        quantity: (.photo_files | length),
+                        condition: (.analyses[0].analysis.condition // "Unknown"),
+                        description: (.analyses[0].analysis.description // ""),
+                        ebay_low: 0, ebay_high: 0, etsy_low: 0, etsy_high: 0,
+                        other_markets: "",
+                        recommended_low: 0, recommended_high: 0,
+                        pricing_notes: "Manual pricing required",
+                        keywords: (.analyses[0].analysis.keywords // [])
+                    }]
+                ')
+                all_lots=$(printf "%s\n%s" "$all_lots" "$fallback_batch" | jq -s 'add')
+            fi
+        else
+            log_warn "Empty response for batch starting at $((start+1))"
+        fi
+
+        start=$(( start + batch_size ))
+    done
+
+    # Attach photo_files from the pre-grouped data (model no longer tracks these)
+    local groups_map
+    groups_map=$(printf "%s" "$groups_json" | jq 'map({key: (.group_id | tostring), value: .photo_files}) | from_entries')
+
+    all_lots=$(printf "%s" "$all_lots" | jq \
+        --argjson gmap "$groups_map" \
+        '[.[] | . + {photo_files: ($gmap[.lot_number | tostring] // [])}]')
+
+    if [[ -z "$all_lots" ]] || ! printf "%s" "$all_lots" | jq -e 'arrays | length > 0' &>/dev/null; then
+        log_warn "All batches failed — falling back to one lot per item"
         lots_from_analysis "$items_json"
         return 0
     fi
 
-    extracted=$(extract_json "$text")
-    if [[ -z "$extracted" ]] || ! printf "%s" "$extracted" | jq -e 'arrays | length > 0' &>/dev/null; then
-        log_warn "Model did not return valid JSON — falling back to one lot per item"
-        log_info "Raw response saved to ./lots_raw_${FOLDER_NAME}.txt"
-        printf "%s" "$text" > "./lots_raw_${FOLDER_NAME}.txt"
-        lots_from_analysis "$items_json"
-        return 0
-    fi
-
-    printf "%s" "$extracted"
+    printf "%s" "$all_lots"
 }
 
 function find_drive_folder() {
@@ -635,13 +678,7 @@ function main() {
         exit 1
     fi
 
-    # Attach any photos the model missed, using timestamp proximity
-    log_info "Enriching photo lists..."
-    local enriched
-    enriched=$(enrich_photo_files "$items_json" "$lots_json")
-    [[ -n "$enriched" ]] && lots_json="$enriched"
-
-    # Renumber lots sequentially starting at 1 (model sometimes uses arbitrary numbers)
+    # Renumber lots sequentially starting at 1
     lots_json=$(renumber_lots "$lots_json")
 
     local lot_count
