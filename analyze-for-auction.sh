@@ -132,6 +132,9 @@ function ollama_chat() {
     local host="$1" model="$2" prompt="$3" image_b64="$4"
     local req_file response
 
+    # Strip trailing slash so "$host/api/chat" never becomes double-slash
+    host="${host%/}"
+
     req_file=$(mktemp)
 
     if [[ -n "$image_b64" ]]; then
