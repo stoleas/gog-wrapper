@@ -138,12 +138,18 @@ function ollama_chat() {
     req_file=$(mktemp)
 
     if [[ -n "$image_b64" ]]; then
+        # Write b64 to a temp file and use --rawfile to avoid hitting
+        # the OS ARG_MAX limit (~2MB) with large images passed via --arg
+        local b64_file
+        b64_file=$(mktemp)
+        printf "%s" "$image_b64" > "$b64_file"
         jq -n \
             --arg model "$model" \
             --arg content "$prompt" \
-            --arg img "$image_b64" \
+            --rawfile img "$b64_file" \
             '{model: $model, stream: false, messages: [{role: "user", content: $content, images: [$img]}]}' \
             > "$req_file"
+        rm -f "$b64_file"
     else
         jq -n \
             --arg model "$model" \
