@@ -37,6 +37,7 @@ arguments:
 
 flags:
         --sheet-name <name>       Name for the output spreadsheet (default: "Auction - <folder>")
+        --overwrite               Clear existing sheet rows before writing (keeps headers)
         --share <emails>          Share the sheet with comma-separated email addresses
         --share-role <role>       Share role: reader|commenter|writer (default: writer)
         --model <name>            Vision model for image analysis (default: $DEFAULT_OLLAMA_MODEL)
@@ -114,25 +115,27 @@ function check_ollama() {
     return 0
 }
 
-# Strip markdown code fences and extract the first JSON object/array from text
+# Strip thinking tokens, markdown fences, and extract the first JSON array/object.
+# Handles qwen3/deepseek-style <think>...</think> reasoning blocks.
 function extract_json() {
     local text="$1"
-    # Remove ```json ... ``` or ``` ... ``` fences
-    text=$(printf "%s" "$text" | sed 's/^```[a-z]*//;s/^```//')
-    # Try to extract first complete JSON array or object
     printf "%s" "$text" | python3 -c "
-import sys, json
+import sys, json, re
 text = sys.stdin.read()
-# Find first [ or {
+# Strip <think>...</think> blocks (qwen3, deepseek-r1, etc.)
+text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+# Strip markdown code fences
+text = re.sub(r'\`\`\`[a-z]*', '', text)
+# Find the first valid JSON array or object
 for i, c in enumerate(text):
     if c in '[{':
         try:
-            obj, end = json.JSONDecoder().raw_decode(text, i)
+            obj, _ = json.JSONDecoder().raw_decode(text, i)
             print(json.dumps(obj))
             break
         except:
             continue
-" 2>/dev/null || printf "%s" "$text" | jq -r '.' 2>/dev/null
+" 2>/dev/null
 }
 
 function ollama_chat() {
@@ -239,24 +242,35 @@ function group_and_price() {
     local host="$1" model="$2" items_json="$3"
     local items_summary item_count prompt text extracted
 
+    # Build summary with timestamps parsed from filenames (YYYYMMDD_HHMMSS)
+    # so the model can use proximity as a grouping hint
     items_summary=$(printf "%s" "$items_json" | jq -r '
         to_entries | .[] |
         (.value.analysis | if type == "object" then . else {} end) as $a |
-        ((.key + 1) | tostring) + ". [" + .value.filename + "]: " +
-        ($a.item_name // "unknown") + ", " +
-        ($a.brand // "unknown brand") + ", condition: " +
-        ($a.condition // "unknown")
+        ((.key + 1) | tostring) + ". [" + .value.filename + "] " +
+        ($a.item_name // "unknown") + " | " +
+        ($a.brand // "?") + " | " +
+        ($a.condition // "?") + " | " +
+        ($a.color // "?") + " | " +
+        ($a.description // "")
     ')
     item_count=$(printf "%s" "$items_json" | jq 'length')
 
-    # Shorter, simpler prompt — llava struggles with long complex instructions
-    prompt='Output ONLY a JSON array. No explanation, no markdown, no code fences.
+    prompt='You are an expert auction appraiser. I photographed items for sale — each item was photographed multiple times from different angles, so several consecutive filenames often show the SAME physical object.
 
-Items:
+IMPORTANT GROUPING RULES:
+- Filenames are timestamps (YYYYMMDD_HHMMSS). Photos taken within ~60 seconds of each other very likely show the same item from different angles — group them together.
+- Also group items that are clearly identical (same model/color/brand) even if taken further apart.
+- Do NOT group different items together just because they are similar in category.
+
+Items to group:
 '"$items_summary"'
 
-Group similar items. For each group output exactly:
-[{"lot_number":1,"item_name":"name","category":"category","brand":"brand","quantity":1,"condition":"Good","description":"auction description","ebay_low":5.00,"ebay_high":25.00,"etsy_low":0.00,"etsy_high":0.00,"other_markets":"","recommended_low":8.00,"recommended_high":20.00,"pricing_notes":"why","photo_files":["file.jpg"],"keywords":["tag"]}]'
+For each lot output ONE JSON object. Combine all photo filenames for that lot into photo_files[].
+Provide realistic eBay SOLD price ranges and a recommended auction price adjusted for condition.
+
+Output ONLY a raw JSON array with no explanation, no markdown, no code fences:
+[{"lot_number":1,"item_name":"specific name","category":"category","brand":"brand or Unknown","quantity":1,"condition":"Excellent|Good|Fair|Poor","description":"compelling 3-4 sentence auction description","ebay_low":5.00,"ebay_high":25.00,"etsy_low":0.00,"etsy_high":0.00,"other_markets":"notes","recommended_low":8.00,"recommended_high":20.00,"pricing_notes":"justification","photo_files":["a.jpg","b.jpg"],"keywords":["tag"]}]'
 
     log_info "Sending $item_count items for grouping and pricing..."
     text=$(ollama_chat "$host" "$model" "$prompt" "")
@@ -320,15 +334,20 @@ function find_sheet_by_name() {
 }
 
 function create_auction_sheet() {
-    local sheet_name="$1" lots_json="$2" items_json="$3"
+    local sheet_name="$1" lots_json="$2" items_json="$3" overwrite="$4"
 
     # Reuse existing sheet if one with this name already exists
     local sheet_id existing
     existing=$(find_sheet_by_name "$sheet_name")
 
     if [[ -n "$existing" ]]; then
-        log_ok "Found existing sheet '$sheet_name' ($existing) — appending"
         sheet_id="$existing"
+        if [[ "$overwrite" == "true" ]]; then
+            log_ok "Found existing sheet '$sheet_name' ($sheet_id) — clearing rows"
+            gog sheets clear "$sheet_id" "Sheet1!A2:Z" --force >/dev/null 2>&1
+        else
+            log_ok "Found existing sheet '$sheet_name' ($sheet_id) — appending"
+        fi
     else
         log_step "Creating spreadsheet: $sheet_name"
         local create_output
@@ -415,11 +434,12 @@ function main() {
     local ollama_host="${OLLAMA_HOST:-$DEFAULT_OLLAMA_HOST}"
     local ollama_model="${OLLAMA_MODEL:-$DEFAULT_OLLAMA_MODEL}"
     local ollama_text_model=""
-    local share_emails="" share_role="writer"
+    local share_emails="" share_role="writer" overwrite="false"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --sheet-name)   sheet_name="$2";         shift ;;
+            --overwrite)    overwrite="true" ;;
             --share)        share_emails="$2";       shift ;;
             --share-role)   share_role="$2";         shift ;;
             --model)        ollama_model="$2";       shift ;;
@@ -558,7 +578,7 @@ function main() {
 
     # --- Step 3: Create spreadsheet ---
     local sheet_id
-    sheet_id=$(create_auction_sheet "$sheet_name" "$lots_json" "$items_json")
+    sheet_id=$(create_auction_sheet "$sheet_name" "$lots_json" "$items_json" "$overwrite")
     if [[ -z "$sheet_id" ]]; then
         log_error "Spreadsheet creation failed"
         exit 1
