@@ -206,24 +206,27 @@ Respond ONLY with valid JSON — no markdown, no explanation, no code fences. Us
 function lots_from_analysis() {
     local items_json="$1"
     printf "%s" "$items_json" | jq '[
-        to_entries[] | {
-            lot_number: (.key + 1),
-            item_name:  (.value.analysis.item_name // "Unknown Item"),
-            category:   (.value.analysis.category // "Other"),
-            brand:      (.value.analysis.brand // "Unknown"),
-            quantity:   1,
-            condition:  (.value.analysis.condition // "Unknown"),
-            description: (.value.analysis.description // ""),
-            ebay_low:   0,
-            ebay_high:  0,
-            etsy_low:   0,
-            etsy_high:  0,
+        to_entries[] |
+        # Normalise analysis to an object regardless of what the model returned
+        (.value.analysis | if type == "object" then . else {} end) as $a |
+        {
+            lot_number:   (.key + 1),
+            item_name:    ($a.item_name  // "Unknown Item"),
+            category:     ($a.category  // "Other"),
+            brand:        ($a.brand     // "Unknown"),
+            quantity:     1,
+            condition:    ($a.condition // "Unknown"),
+            description:  ($a.description // ""),
+            ebay_low:     0,
+            ebay_high:    0,
+            etsy_low:     0,
+            etsy_high:    0,
             other_markets: "",
             recommended_low:  0,
             recommended_high: 0,
             pricing_notes: "Manual pricing required — model could not complete market research",
-            photo_files: [.value.filename],
-            keywords: (.value.analysis.keywords // [])
+            photo_files:  [.value.filename],
+            keywords:     ($a.keywords // [])
         }
     ]'
 }
