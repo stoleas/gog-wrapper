@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Copy this file to vars.local.sh and fill in your details.
+# vars.local.sh is gitignored and never committed.
+
+DEFAULT_GOG_ACCOUNT="you@gmail.com"
+# GOG_KEYRING_PASSWORD="your-keyring-password"

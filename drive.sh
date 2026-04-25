@@ -7,15 +7,7 @@ DEPENDENCIES=(gog)
 SCRIPT_NAME=$(basename "$0")
 VERSION="1.0.0"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
 
-if [[ -n "${NO_COLOR:-}" ]] || [[ "${TERM:-}" == "dumb" ]]; then
-    RED="" GREEN="" YELLOW="" BLUE="" NC=""
-fi
 
 function usage() {
     cat <<EOM

@@ -13,16 +13,6 @@ DEFAULT_OLLAMA_MODEL="llama3.2-vision"
 DEFAULT_OLLAMA_HOST="http://localhost:11434"
 DEPENDENCIES=(gog curl jq base64)
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-if [[ -n "${NO_COLOR:-}" ]] || [[ "${TERM:-}" == "dumb" ]]; then
-    RED="" GREEN="" YELLOW="" BLUE="" CYAN="" NC=""
-fi
 
 function usage() {
     cat <<EOM

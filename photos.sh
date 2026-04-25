@@ -9,15 +9,7 @@ VERSION="1.0.0"
 PHOTOS_API="https://photoslibrary.googleapis.com/v1"
 GOG_CREDENTIALS_FILE="${HOME}/.config/gogcli/credentials.json"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
 
-if [[ -n "${NO_COLOR:-}" ]] || [[ "${TERM:-}" == "dumb" ]]; then
-    RED="" GREEN="" YELLOW="" BLUE="" NC=""
-fi
 
 function usage() {
     cat <<EOM

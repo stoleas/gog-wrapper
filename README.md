@@ -5,18 +5,24 @@ Bash wrappers around [`gogcli`](https://github.com/steipete/gogcli) for Google W
 ## Requirements
 
 - [`gogcli`](https://github.com/steipete/gogcli) installed as `gog` and in `PATH`
-- A `vars.sh` file (see [Configuration](#configuration))
+- A `vars.local.sh` file (see [Configuration](#configuration))
 
 ## Configuration
 
-Copy `vars.sh` and set your defaults:
+Create `vars.local.sh` (gitignored — never committed) with your account:
 
 ```sh
-DEFAULT_GOG_ACCOUNT="you@example.com"
-GOG_KEYRING_PASSWORD=""
+cp vars.local.sh.example vars.local.sh
+# then edit vars.local.sh
 ```
 
-The `GOG_ACCOUNT` environment variable always takes precedence over `DEFAULT_GOG_ACCOUNT`. You can also override per-command with `-a <email>`.
+```sh
+# vars.local.sh
+DEFAULT_GOG_ACCOUNT="you@gmail.com"
+# GOG_KEYRING_PASSWORD="your-keyring-password"   # only if needed
+```
+
+`vars.sh` is the committed template that sources `vars.local.sh` automatically. The `GOG_ACCOUNT` environment variable always takes precedence over `DEFAULT_GOG_ACCOUNT`. You can also override per-command with `-a <email>`.
 
 ## Scripts
 
@@ -135,6 +141,63 @@ sheets.sh <command> [flags]
 ./sheets.sh append <spreadsheetId> "Sheet1!A:C" --values-json '[["2026-04-23","item","10"]]'
 ./sheets.sh export <spreadsheetId> --format xlsx
 ```
+
+---
+
+### `photos-to-drive.sh` — Bulk upload photos to Drive
+
+Uploads a local folder of photos/videos to a Google Drive folder. Designed for saving a downloaded Google Photos shared album to Drive.
+
+```
+photos-to-drive.sh <source-folder> [flags]
+```
+
+**Examples**
+
+```sh
+# Create a new Drive folder and upload into it
+./photos-to-drive.sh ~/Downloads/album --album-name "Beach Trip 2026"
+
+# Upload into an existing Drive folder
+./photos-to-drive.sh ~/Downloads/album --folder <driveId>
+
+# Preview without uploading
+./photos-to-drive.sh ~/Downloads/album --album-name "Trip" --dry-run
+```
+
+---
+
+### `analyze-for-auction.sh` — Auction analysis spreadsheet
+
+Analyzes photos in a Google Drive folder using a local [Ollama](https://ollama.com) vision model, groups items into lots, and writes descriptions and pricing to a Google Sheet.
+
+**Extra requirements:**
+- Ollama running with a vision model: `ollama pull llava` or `ollama pull llama3.2-vision`
+- `jq` installed
+
+```
+analyze-for-auction.sh <drive-folder-name> [flags]
+```
+
+**Examples**
+
+```sh
+# Ollama on localhost
+./analyze-for-auction.sh myfolder --sheet-name "Sale April 2026"
+
+# Ollama on a remote server
+./analyze-for-auction.sh myfolder \
+  --ollama-host http://myserver:11434 \
+  --model llava \
+  --text-model qwen3.5:9b \
+  --sheet-name "Sale April 2026" \
+  --share colleague@example.com
+
+# Resume after interruption (skips re-analyzing photos)
+./analyze-for-auction.sh myfolder --resume ./analysis_myfolder.json
+```
+
+**Output spreadsheet columns:** Lot #, Category, Item Name, Brand, Qty, Condition, Description, eBay Low/High, Etsy Low/High, Other Markets, Rec. Low/High, Pricing Notes, Keywords, Photo Links
 
 ---
 
