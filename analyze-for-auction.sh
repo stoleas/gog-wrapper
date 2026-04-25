@@ -37,6 +37,8 @@ arguments:
 
 flags:
         --sheet-name <name>       Name for the output spreadsheet (default: "Auction - <folder>")
+        --share <emails>          Share the sheet with comma-separated email addresses
+        --share-role <role>       Share role: reader|commenter|writer (default: writer)
         --model <name>            Ollama model to use (default: $DEFAULT_OLLAMA_MODEL)
         --ollama-host <url>       Ollama host (default: $DEFAULT_OLLAMA_HOST)
         --resume <analysis.json>  Skip photo analysis; resume from a saved analysis file
@@ -401,10 +403,13 @@ function main() {
     local sheet_name="" resume_file="" dry_run="false" no_input="false" account=""
     local ollama_host="${OLLAMA_HOST:-$DEFAULT_OLLAMA_HOST}"
     local ollama_model="${OLLAMA_MODEL:-$DEFAULT_OLLAMA_MODEL}"
+    local share_emails="" share_role="writer"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --sheet-name)   sheet_name="$2";     shift ;;
+            --share)        share_emails="$2";   shift ;;
+            --share-role)   share_role="$2";     shift ;;
             --model)        ollama_model="$2";   shift ;;
             --ollama-host)  ollama_host="$2";    shift ;;
             --resume)       resume_file="$2";    shift ;;
@@ -539,12 +544,28 @@ function main() {
         exit 1
     fi
 
+    # --- Step 4: Share the sheet ---
+    if [[ -n "$share_emails" ]]; then
+        log_step "Sharing sheet with: $share_emails (role: $share_role)"
+        IFS=',' read -ra email_list <<< "$share_emails"
+        for email in "${email_list[@]}"; do
+            email="${email// /}"   # strip any spaces
+            [[ -z "$email" ]] && continue
+            if gog drive share "$sheet_id" --email "$email" --role "$share_role" --no-input >/dev/null 2>&1; then
+                log_ok "Shared with $email"
+            else
+                log_warn "Failed to share with $email"
+            fi
+        done
+    fi
+
     log_ok "Done!"
     printf "\n"
     printf "  Spreadsheet: https://docs.google.com/spreadsheets/d/%s\n" "$sheet_id"
     printf "  Lots:        %d\n" "$lot_count"
     printf "  Items:       %d\n" "$analyzed_count"
     printf "  Checkpoint:  %s\n" "$checkpoint_file"
+    [[ -n "$share_emails" ]] && printf "  Shared with: %s\n" "$share_emails"
     printf "\n"
 }
 
