@@ -474,7 +474,7 @@ function create_auction_sheet() {
         sheet_id="$existing"
         if [[ "$overwrite" == "true" ]]; then
             log_ok "Found existing sheet '$sheet_name' ($sheet_id) — clearing rows"
-            gog sheets clear "$sheet_id" "Sheet1!A2:Z" --force >/dev/null 2>&1
+            gog sheets clear "$sheet_id" "Sheet1!A1:ZZ" --force >/dev/null 2>&1
         else
             log_ok "Found existing sheet '$sheet_name' ($sheet_id) — appending"
         fi
@@ -495,9 +495,8 @@ function create_auction_sheet() {
         fi
         log_ok "Created sheet: $sheet_id"
 
-        local headers='[["Lot #","Category","Item Name","Brand","Qty","Condition","Description","eBay Low","eBay High","Etsy Low","Etsy High","Other Markets","Rec. Low","Rec. High","Pricing Notes","Keywords","Photo Links"]]'
-        gog sheets update "$sheet_id" "Sheet1!A1:Q1" \
-            --values-json "$headers" --input USER_ENTERED >/dev/null 2>&1
+        # Headers written after we know max_photos (below)
+        :
     fi
 
     # Build filename -> Drive URL map from items_json
@@ -507,38 +506,68 @@ function create_auction_sheet() {
         | from_entries
     ')
 
+    # How many photo columns do we need?
+    local max_photos
+    max_photos=$(printf "%s" "$lots_json" | jq '[.[] | (.photo_files // []) | length] | max // 1')
+
+    # Convert column index (1-based) to A1 letter(s): 1=A, 26=Z, 27=AA, etc.
+    function col_letter() {
+        python3 -c "
+n=$1
+s=''
+while n>0:
+    n,r=divmod(n-1,26)
+    s=chr(65+r)+s
+print(s)
+"
+    }
+
+    # Fixed columns A–P (16), then Photo 1..N starting at Q (col 17)
+    local last_col_idx=$(( 16 + max_photos ))
+    local last_col
+    last_col=$(col_letter "$last_col_idx")
+
+    # Write headers (always, even on overwrite so photo columns stay labelled)
+    local photo_headers
+    photo_headers=$(python3 -c "print(','.join(f'\"Photo {i+1}\"' for i in range($max_photos)))")
+    local headers
+    headers="[[\"Lot #\",\"Category\",\"Item Name\",\"Brand\",\"Qty\",\"Condition\",\"Description\",\"eBay Low\",\"eBay High\",\"Etsy Low\",\"Etsy High\",\"Other Markets\",\"Rec. Low\",\"Rec. High\",\"Pricing Notes\",\"Keywords\",${photo_headers}]]"
+    gog sheets update "$sheet_id" "Sheet1!A1:${last_col}1" \
+        --values-json "$headers" --input USER_ENTERED >/dev/null 2>&1
+
     local rows
     rows=$(printf "%s" "$lots_json" | jq \
-        --argjson urls "$url_map" '
-        [.[] | [
-            (.lot_number | tostring),
-            .category,
-            .item_name,
-            (.brand // "Unknown"),
-            (.quantity | tostring),
-            .condition,
-            .description,
-            ("$" + (.ebay_low | tostring)),
-            ("$" + (.ebay_high | tostring)),
-            ("$" + (.etsy_low | tostring)),
-            ("$" + (.etsy_high | tostring)),
-            (.other_markets // ""),
-            ("$" + (.recommended_low | tostring)),
-            ("$" + (.recommended_high | tostring)),
-            (.pricing_notes // ""),
-            (.keywords // [] | join(", ")),
-            # Sheets only evaluates one formula per cell.
-            # Single photo -> =HYPERLINK(...); multiple -> link first + plain list of rest.
-            (.photo_files // [] | . as $files |
-                if length == 0 then ""
-                elif length == 1 then
-                    "=HYPERLINK(\"" + ($urls[$files[0]] // "") + "\",\"" + $files[0] + "\")"
-                else
-                    "=HYPERLINK(\"" + ($urls[$files[0]] // "") + "\",\"" + $files[0] + "\")" +
-                    " (+" + ((length - 1) | tostring) + " more: " +
-                    ($files[1:] | join(", ")) + ")"
-                end)
-        ]]
+        --argjson urls "$url_map" \
+        --argjson max_photos "$max_photos" '
+        [.[] |
+            (.photo_files // []) as $files |
+            [
+                (.lot_number | tostring),
+                .category,
+                .item_name,
+                (.brand // "Unknown"),
+                (.quantity | tostring),
+                .condition,
+                .description,
+                ("$" + (.ebay_low | tostring)),
+                ("$" + (.ebay_high | tostring)),
+                ("$" + (.etsy_low | tostring)),
+                ("$" + (.etsy_high | tostring)),
+                (.other_markets // ""),
+                ("$" + (.recommended_low | tostring)),
+                ("$" + (.recommended_high | tostring)),
+                (.pricing_notes // ""),
+                (.keywords // [] | join(", "))
+            ] +
+            # One HYPERLINK per photo column, padded with "" to max_photos
+            [ range(max_photos) | . as $i |
+                if $i < ($files | length) then
+                    ($files[$i]) as $f |
+                    "=HYPERLINK(\"" + ($urls[$f] // "") + "\",\"" + $f + "\")"
+                else ""
+                end
+            ]
+        ]
     ')
 
     if [[ -z "$rows" || "$rows" == "[]" ]]; then
@@ -546,8 +575,8 @@ function create_auction_sheet() {
         return 1
     fi
 
-    log_info "Writing $(printf "%s" "$rows" | jq 'length') rows..."
-    gog sheets append "$sheet_id" "Sheet1!A:Q" \
+    log_info "Writing $(printf "%s" "$rows" | jq 'length') rows ($(printf "%s" "$max_photos") photo column(s))..."
+    gog sheets append "$sheet_id" "Sheet1!A:${last_col}" \
         --values-json "$rows" --insert INSERT_ROWS --input USER_ENTERED >/dev/null 2>&1
 
     printf "%s" "$sheet_id"
