@@ -164,7 +164,13 @@ function analyze_image() {
     local host="$1" model="$2" image_path="$3" filename="$4"
     local b64 prompt text
 
-    b64=$(base64 -w 0 "$image_path")
+    # Strip all whitespace — some base64 implementations add line breaks
+    # that cause "illegal base64 data" errors in Ollama
+    b64=$(base64 -w 0 "$image_path" 2>/dev/null | tr -d '\n\r ')
+    if [[ -z "$b64" ]]; then
+        printf '{"error": "base64 encoding failed for %s"}' "$filename"
+        return 1
+    fi
 
     prompt="You are an expert auction house appraiser. Analyze this item photo for an auction listing.
 Filename: $filename
@@ -252,7 +258,18 @@ function list_drive_images() {
 
 function download_image_file() {
     local file_id="$1" out_path="$2"
-    gog drive download "$file_id" --out "$out_path" --force >/dev/null 2>&1
+    local err
+    err=$(gog drive download "$file_id" --out "$out_path" --force 2>&1)
+    local rc=$?
+    if [[ $rc -ne 0 ]]; then
+        log_warn "gog drive download failed: $err"
+        return 1
+    fi
+    if [[ ! -s "$out_path" ]]; then
+        log_warn "Downloaded file is empty: $out_path"
+        return 1
+    fi
+    return 0
 }
 
 function create_auction_sheet() {
@@ -389,17 +406,20 @@ function main() {
             local img_path="$tmp_dir/$filename"
 
             printf "${CYAN}[%d/%d]${NC} %-35s downloading... " "$idx" "$total_images" "$filename" >&2
-            if ! download_image_file "$file_id" "$img_path"; then
-                printf "${RED}download failed, skipping${NC}\n" >&2
+            if ! download_image_file "$file_id" "$img_path" 2>/dev/null; then
+                printf "${RED}failed, skipping${NC}\n" >&2
                 continue
             fi
-            printf "analyzing... " >&2
+            local file_size
+            file_size=$(wc -c < "$img_path" 2>/dev/null || echo 0)
+            printf "analyzing (%d KB)... " "$(( file_size / 1024 ))" >&2
 
             local analysis
             analysis=$(analyze_image "$ollama_host" "$ollama_model" "$img_path" "$filename")
 
             if ! printf "%s" "$analysis" | jq -e . &>/dev/null; then
                 printf "${YELLOW}parse error, skipping${NC}\n" >&2
+                log_warn "Raw response for $filename: $analysis"
                 continue
             fi
 
