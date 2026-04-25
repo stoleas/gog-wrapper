@@ -243,16 +243,18 @@ function group_and_price() {
     local items_summary item_count prompt text extracted
 
     # Build summary with timestamps parsed from filenames (YYYYMMDD_HHMMSS)
-    # so the model can use proximity as a grouping hint
+    # so the model can use proximity as a grouping hint.
+    # Normalize any array-valued fields to comma-joined strings.
     items_summary=$(printf "%s" "$items_json" | jq -r '
+        def str: if type == "array" then join(", ") elif . == null then "?" else tostring end;
         to_entries | .[] |
         (.value.analysis | if type == "object" then . else {} end) as $a |
         ((.key + 1) | tostring) + ". [" + .value.filename + "] " +
-        ($a.item_name // "unknown") + " | " +
-        ($a.brand // "?") + " | " +
-        ($a.condition // "?") + " | " +
-        ($a.color // "?") + " | " +
-        ($a.description // "")
+        ($a.item_name | str) + " | " +
+        ($a.brand     | str) + " | " +
+        ($a.condition | str) + " | " +
+        ($a.color     | str) + " | " +
+        ($a.description | str)
     ')
     item_count=$(printf "%s" "$items_json" | jq 'length')
 
