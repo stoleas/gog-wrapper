@@ -201,44 +201,71 @@ Respond ONLY with valid JSON — no markdown, no explanation, no code fences. Us
     fi
 }
 
+# Build lots directly from per-photo analysis without needing a grouping model call.
+# Used as a fallback when the model can't produce valid JSON for the grouping step.
+function lots_from_analysis() {
+    local items_json="$1"
+    printf "%s" "$items_json" | jq '[
+        to_entries[] | {
+            lot_number: (.key + 1),
+            item_name:  (.value.analysis.item_name // "Unknown Item"),
+            category:   (.value.analysis.category // "Other"),
+            brand:      (.value.analysis.brand // "Unknown"),
+            quantity:   1,
+            condition:  (.value.analysis.condition // "Unknown"),
+            description: (.value.analysis.description // ""),
+            ebay_low:   0,
+            ebay_high:  0,
+            etsy_low:   0,
+            etsy_high:  0,
+            other_markets: "",
+            recommended_low:  0,
+            recommended_high: 0,
+            pricing_notes: "Manual pricing required — model could not complete market research",
+            photo_files: [.value.filename],
+            keywords: (.value.analysis.keywords // [])
+        }
+    ]'
+}
+
 function group_and_price() {
     local host="$1" model="$2" items_json="$3"
     local items_summary item_count prompt text extracted
 
     items_summary=$(printf "%s" "$items_json" | jq -r '
         to_entries | .[] |
-        ((.key + 1) | tostring) + ". [" + .value.filename + "] " + (.value.analysis | tostring)
+        ((.key + 1) | tostring) + ". [" + .value.filename + "]: " +
+        (.value.analysis.item_name // "unknown") + ", " +
+        (.value.analysis.brand // "unknown brand") + ", condition: " +
+        (.value.analysis.condition // "unknown")
     ')
     item_count=$(printf "%s" "$items_json" | jq 'length')
 
-    prompt="You are an expert auction house appraiser and resale pricing specialist with deep knowledge of eBay sold listings, Etsy, LiveAuctioneers, and other resale markets.
+    # Shorter, simpler prompt — llava struggles with long complex instructions
+    prompt='Output ONLY a JSON array. No explanation, no markdown, no code fences.
 
-I have $item_count items photographed for auction:
+Items:
+'"$items_summary"'
 
-$items_summary
+Group similar items. For each group output exactly:
+[{"lot_number":1,"item_name":"name","category":"category","brand":"brand","quantity":1,"condition":"Good","description":"auction description","ebay_low":5.00,"ebay_high":25.00,"etsy_low":0.00,"etsy_high":0.00,"other_markets":"","recommended_low":8.00,"recommended_high":20.00,"pricing_notes":"why","photo_files":["file.jpg"],"keywords":["tag"]}]'
 
-Please:
-1. Group identical or very similar items together into lots
-2. Write a compelling auction listing description for each lot
-3. Provide realistic price ranges based on eBay SOLD listings and comparable auction results
-4. Adjust prices for the stated condition
-
-Respond ONLY with a valid JSON array — no markdown, no explanation, no code fences. Each element must have exactly these fields:
-{\"lot_number\": 1, \"item_name\": \"clear name\", \"category\": \"category\", \"brand\": \"brand or Unknown\", \"quantity\": 1, \"condition\": \"Excellent|Good|Fair|Poor\", \"description\": \"3-4 sentence compelling auction description\", \"ebay_low\": 5.00, \"ebay_high\": 25.00, \"etsy_low\": 0.00, \"etsy_high\": 0.00, \"other_markets\": \"notes\", \"recommended_low\": 8.00, \"recommended_high\": 20.00, \"pricing_notes\": \"brief justification\", \"photo_files\": [\"file.jpg\"], \"keywords\": [\"tag1\", \"tag2\"]}"
-
+    log_info "Sending $item_count items for grouping and pricing..."
     text=$(ollama_chat "$host" "$model" "$prompt" "")
 
     if [[ -z "$text" ]]; then
-        log_error "Empty response from Ollama during grouping step"
-        return 1
+        log_warn "Empty response from model during grouping — falling back to one lot per item"
+        lots_from_analysis "$items_json"
+        return 0
     fi
 
     extracted=$(extract_json "$text")
-    if [[ -z "$extracted" ]]; then
-        log_warn "Could not parse JSON from grouping response — saving raw output"
-        printf "%s" "$text" > "./lots_raw_${FOLDER_NAME}.txt"
+    if [[ -z "$extracted" ]] || ! printf "%s" "$extracted" | jq -e 'arrays | length > 0' &>/dev/null; then
+        log_warn "Model did not return valid JSON — falling back to one lot per item"
         log_info "Raw response saved to ./lots_raw_${FOLDER_NAME}.txt"
-        return 1
+        printf "%s" "$text" > "./lots_raw_${FOLDER_NAME}.txt"
+        lots_from_analysis "$items_json"
+        return 0
     fi
 
     printf "%s" "$extracted"
