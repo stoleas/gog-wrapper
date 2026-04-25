@@ -200,6 +200,64 @@ gog auth add edward.quail.claw@gmail.com \
 ./photos.sh upload ./photo.jpg --album <albumId>
 ```
 
+## photos-to-drive.sh
+
+Bulk-uploads a local folder of photos/videos to a Google Drive folder. Designed for saving a downloaded Google Photos shared album to Drive.
+
+**Workflow:**
+1. In Google Photos, open the shared album → select all → three-dot menu → Download (saves a zip)
+2. Unzip: `unzip ~/Downloads/Photos*.zip -d ~/Downloads/album`
+3. Upload to Drive:
+
+```sh
+# Create a new Drive folder and upload into it
+./photos-to-drive.sh ~/Downloads/album --album-name "Beach Trip 2026"
+
+# Upload into an existing Drive folder
+./photos-to-drive.sh ~/Downloads/album --folder <driveId>
+
+# Preview without uploading
+./photos-to-drive.sh ~/Downloads/album --album-name "Trip" --dry-run
+```
+
+## analyze-for-auction.sh
+
+Analyzes photos in a Google Drive folder using a local Ollama vision model, groups identical items into lots, researches market prices (eBay, Etsy, comparable auctions), and writes everything to a Google Sheet.
+
+**Requirements:**
+- Ollama running with a vision model pulled (e.g. `llava`)
+- Photos already uploaded to Drive (use `photos-to-drive.sh` first)
+
+**One-time model pull (on the Ollama server):**
+```sh
+ollama pull llava              # ~4GB, fast
+ollama pull llama3.2-vision    # ~8GB, higher quality
+```
+
+```sh
+# Basic usage (Ollama on localhost)
+./analyze-for-auction.sh kellystore4242026
+
+# Custom sheet name
+./analyze-for-auction.sh kellystore4242026 --sheet-name "Kelly Store April 2026"
+
+# Ollama on a remote server (standard port 11434)
+./analyze-for-auction.sh kellystore4242026 \
+  --ollama-host http://openclaw:11434 \
+  --model llava \
+  --sheet-name "Kelly Store April 2026"
+
+# Dry run — analyze photos and print lots without creating a sheet
+./analyze-for-auction.sh kellystore4242026 --dry-run
+
+# Resume after interruption (skips re-analyzing photos)
+./analyze-for-auction.sh kellystore4242026 --resume ./analysis_kellystore4242026.json
+```
+
+**Output spreadsheet columns:** Lot #, Category, Item Name, Brand, Qty, Condition, Description, eBay Low/High, Etsy Low/High, Other Markets, Rec. Low/High, Pricing Notes, Keywords, Photos
+
+**Checkpoints:** Raw photo analysis is saved to `./analysis_<folder>.json` after step 1. If the script is interrupted during grouping/pricing, rerun with `--resume` to skip straight to the sheet creation.
+
 ## Patterns
 
 **Pipe JSON to jq**

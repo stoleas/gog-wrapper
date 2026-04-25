@@ -200,6 +200,38 @@ gog auth add edward.quail.claw@gmail.com \
 ./photos.sh upload ./photo.jpg --album <albumId>
 ```
 
+## photos-to-drive.sh
+
+Bulk-uploads a local folder of photos/videos to a Google Drive folder. Use after manually downloading a Google Photos shared album (download zip → unzip → run this).
+
+```sh
+./photos-to-drive.sh ~/Downloads/album --album-name "Beach Trip 2026"
+./photos-to-drive.sh ~/Downloads/album --folder <driveId>
+./photos-to-drive.sh ~/Downloads/album --album-name "Trip" --dry-run
+```
+
+## analyze-for-auction.sh
+
+Analyzes photos in a Google Drive folder using a local Ollama vision model, groups identical items into lots, researches eBay/Etsy market prices, and writes results to a Google Sheet. Use when the user wants to auction or sell items photographed in a Drive folder.
+
+**Requires:** Ollama running with a vision model (e.g. `llava`). Text-only models (e.g. `qwen3.5:9b`) will NOT work for image analysis — must have a vision-capable model (name contains `vl`, `vision`, or `llava`).
+
+```sh
+# Ollama on localhost
+./analyze-for-auction.sh kellystore4242026 --sheet-name "Kelly Store April 2026"
+
+# Ollama on remote server (openclaw uses standard port 11434)
+./analyze-for-auction.sh kellystore4242026 \
+  --ollama-host http://openclaw:11434 \
+  --model llava \
+  --sheet-name "Kelly Store April 2026"
+
+# Resume after interruption
+./analyze-for-auction.sh kellystore4242026 --resume ./analysis_kellystore4242026.json
+```
+
+Saves checkpoints: `./analysis_<folder>.json` (per-photo analysis) and `./lots_<folder>.json` (grouped lots). Rerun with `--resume` to skip photo re-analysis if interrupted.
+
 ## Patterns
 
 **Pipe JSON to jq**
