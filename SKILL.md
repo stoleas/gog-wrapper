@@ -4,6 +4,42 @@ These bash scripts wrap [`gogcli`](https://github.com/steipete/gogcli) (invoked 
 
 All scripts live in this directory. Run them with `bash <script>.sh` or `./script.sh` if executable. They all source `vars.sh` for the default account.
 
+## Install
+
+```sh
+# 1. Clone the repo
+git clone git@github.com:stoleas/gog-wrapper.git
+cd gog-wrapper
+
+# 2. Install gogcli
+brew install steipete/tap/gogcli
+
+# 3. Set your Google account
+#    Edit vars.sh and set DEFAULT_GOG_ACCOUNT
+vi vars.sh
+
+# 4. Make scripts executable
+chmod +x *.sh
+
+# 5. Authorize gog with your Google account
+gog auth credentials /path/to/client_secret.json
+gog auth add you@gmail.com --services gmail,calendar,drive,contacts,docs,sheets
+
+# 6. (Optional) For analyze-for-auction.sh — pull a vision model on your Ollama server
+ollama pull llava
+```
+
+### analyze-for-auction.sh extra dependencies
+
+```sh
+# jq (JSON processor)
+brew install jq           # macOS
+sudo apt install jq       # Ubuntu/Debian
+
+# python3 (for JSON extraction — usually pre-installed)
+python3 --version
+```
+
 ## Account
 
 The active Google account is set by `GOG_ACCOUNT` or `DEFAULT_GOG_ACCOUNT` in `vars.sh`. Override per-command with `-a <email>`.
