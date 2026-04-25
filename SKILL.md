@@ -1,6 +1,6 @@
 # gog-wrapper — Claude Skills
 
-These bash scripts wrap [`gogcli`](https://github.com/steipete/gogcli) (invoked as `gog`) to give you CLI access to Google Workspace. Use them whenever the user asks you to read or write Gmail, Google Calendar, Drive, Docs, or Sheets on their behalf.
+These bash scripts wrap [`gogcli`](https://github.com/steipete/gogcli) (invoked as `gog`) to give you CLI access to Google Workspace. Use them whenever the user asks you to read or write Gmail, Google Calendar, Drive, Docs, Sheets, or Photos on their behalf.
 
 All scripts live in this directory. Run them with `bash <script>.sh` or `./script.sh` if executable. They all source `vars.sh` for the default account.
 
@@ -170,6 +170,34 @@ Wraps `gog sheets`. Use for reading and writing Google Sheets.
 # Export
 ./sheets.sh export <spreadsheetId> --format xlsx
 ./sheets.sh export <spreadsheetId> --format csv
+```
+
+## photos.sh
+
+Calls the Google Photos Library REST API using gog OAuth tokens. Unlike other wrappers, this uses curl directly (gog has no native photos command).
+
+**One-time setup** — re-authorize with photos scopes:
+```sh
+gog auth add edward.quail.claw@gmail.com \
+  --extra-scopes "https://www.googleapis.com/auth/photoslibrary.readonly,https://www.googleapis.com/auth/photoslibrary" \
+  --force-consent
+```
+
+```sh
+# Browse
+./photos.sh list --max 10 --json
+./photos.sh search "sunset" --max 20 --json
+./photos.sh get <mediaItemId> --json
+./photos.sh download <mediaItemId> --out ./photo.jpg
+
+# Albums
+./photos.sh albums --json
+./photos.sh album <albumId> --max 50 --json
+./photos.sh create-album "Trip 2026"
+
+# Upload
+./photos.sh upload ./photo.jpg
+./photos.sh upload ./photo.jpg --album <albumId>
 ```
 
 ## Patterns
