@@ -527,10 +527,17 @@ function create_auction_sheet() {
             ("$" + (.recommended_high | tostring)),
             (.pricing_notes // ""),
             (.keywords // [] | join(", ")),
-            # Build one HYPERLINK formula per photo, newline-separated
-            (.photo_files // [] |
-                map(. as $f | "=HYPERLINK(\"" + ($urls[$f] // "") + "\",\"" + $f + "\")")
-                | join("\n"))
+            # Sheets only evaluates one formula per cell.
+            # Single photo -> =HYPERLINK(...); multiple -> link first + plain list of rest.
+            (.photo_files // [] | . as $files |
+                if length == 0 then ""
+                elif length == 1 then
+                    "=HYPERLINK(\"" + ($urls[$files[0]] // "") + "\",\"" + $files[0] + "\")"
+                else
+                    "=HYPERLINK(\"" + ($urls[$files[0]] // "") + "\",\"" + $files[0] + "\")" +
+                    " (+" + ((length - 1) | tostring) + " more: " +
+                    ($files[1:] | join(", ")) + ")"
+                end)
         ]]
     ')
 
