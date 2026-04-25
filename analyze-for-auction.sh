@@ -560,7 +560,7 @@ print(s)
                 (.keywords // [] | join(", "))
             ] +
             # One HYPERLINK per photo column, padded with "" to max_photos
-            [ range(max_photos) | . as $i |
+            [ range($max_photos) | . as $i |
                 if $i < ($files | length) then
                     ($files[$i]) as $f |
                     "=HYPERLINK(\"" + ($urls[$f] // "") + "\",\"" + $f + "\")"
