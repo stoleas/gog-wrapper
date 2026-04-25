@@ -238,6 +238,78 @@ function lots_from_analysis() {
     ]'
 }
 
+# Expand each lot's photo_files using 60-second timestamp proximity.
+# The model often omits photos — this catches everything the model missed by
+# assigning unassigned files to whichever lot's photos are nearest in time.
+function enrich_photo_files() {
+    local items_json="$1" lots_json="$2"
+    local items_file lots_file result
+    items_file=$(mktemp)
+    lots_file=$(mktemp)
+    printf "%s" "$items_json" > "$items_file"
+    printf "%s" "$lots_json"  > "$lots_file"
+
+    result=$(python3 - "$items_file" "$lots_file" <<'PYEOF'
+import sys, json, re
+from datetime import datetime
+
+def parse_ts(filename):
+    m = re.search(r'(\d{8}_\d{6})', filename)
+    if m:
+        try:
+            return datetime.strptime(m.group(1), '%Y%m%d_%H%M%S').timestamp()
+        except:
+            pass
+    return None
+
+with open(sys.argv[1]) as f:
+    items = json.load(f)
+with open(sys.argv[2]) as f:
+    lots = json.load(f)
+
+fname_to_ts = {item['filename']: parse_ts(item['filename']) for item in items}
+
+assigned = set()
+for lot in lots:
+    for fname in lot.get('photo_files', []):
+        assigned.add(fname)
+
+# Per-lot list of known timestamps (used to find nearest lot for unassigned photos)
+lot_ts = []
+for lot in lots:
+    ts_list = [fname_to_ts.get(f) for f in lot.get('photo_files', [])
+               if fname_to_ts.get(f) is not None]
+    lot_ts.append(ts_list)
+
+# Sort unassigned items by timestamp for deterministic assignment order
+unassigned = [(item['filename'], fname_to_ts.get(item['filename']))
+              for item in items if item['filename'] not in assigned]
+unassigned = sorted([(f, t) for f, t in unassigned if t is not None], key=lambda x: x[1])
+
+for fname, ts in unassigned:
+    best_idx, best_dist = None, float('inf')
+    for i, ts_list in enumerate(lot_ts):
+        for lot_t in ts_list:
+            dist = abs(ts - lot_t)
+            if dist < best_dist:
+                best_dist, best_idx = dist, i
+    # Only attach within 5-minute window to avoid cross-lot bleed
+    if best_idx is not None and best_dist <= 300:
+        lots[best_idx]['photo_files'].append(fname)
+        lot_ts[best_idx].append(ts)
+
+print(json.dumps(lots))
+PYEOF
+)
+    rm -f "$items_file" "$lots_file"
+    printf "%s" "$result"
+}
+
+# Renumber lots 1..N regardless of what the model assigned.
+function renumber_lots() {
+    printf "%s" "$1" | jq '[to_entries[] | .value + {lot_number: (.key + 1)}]'
+}
+
 function group_and_price() {
     local host="$1" model="$2" items_json="$3"
     local items_summary item_count prompt text extracted
@@ -413,7 +485,7 @@ function create_auction_sheet() {
 
     log_info "Writing $(printf "%s" "$rows" | jq 'length') rows..."
     gog sheets append "$sheet_id" "Sheet1!A:Q" \
-        --values-json "$rows" --insert INSERT_ROWS >/dev/null 2>&1
+        --values-json "$rows" --insert INSERT_ROWS --input USER_ENTERED >/dev/null 2>&1
 
     printf "%s" "$sheet_id"
 }
@@ -562,6 +634,15 @@ function main() {
         log_error "Failed to get valid lots from model — check ./lots_raw_${folder_name}.txt"
         exit 1
     fi
+
+    # Attach any photos the model missed, using timestamp proximity
+    log_info "Enriching photo lists..."
+    local enriched
+    enriched=$(enrich_photo_files "$items_json" "$lots_json")
+    [[ -n "$enriched" ]] && lots_json="$enriched"
+
+    # Renumber lots sequentially starting at 1 (model sometimes uses arbitrary numbers)
+    lots_json=$(renumber_lots "$lots_json")
 
     local lot_count
     lot_count=$(printf "%s" "$lots_json" | jq 'length')
