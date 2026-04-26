@@ -1,4 +1,10 @@
-# gog-wrapper — Claude Skills
+---
+name: gog-wrapper
+description: CLI wrappers for Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Photos) via gogcli. Use when the user asks you to read or write email, calendar events, Drive files, Docs, or Sheets.
+metadata: {"openclaw": {"requires": {"bins": ["gog", "jq"]}}}
+---
+
+# gog-wrapper
 
 These bash scripts wrap [`gogcli`](https://github.com/steipete/gogcli) (invoked as `gog`) to give you CLI access to Google Workspace. Use them whenever the user asks you to read or write Gmail, Google Calendar, Drive, Docs, Sheets, or Photos on their behalf.
 
@@ -38,6 +44,55 @@ sudo apt install jq       # Ubuntu/Debian
 
 # python3 (for JSON extraction — usually pre-installed)
 python3 --version
+```
+
+### Install as a Claude Code skill
+
+```sh
+mkdir -p ~/.claude/skills
+ln -s "$(pwd)" ~/.claude/skills/gog-wrapper
+```
+
+Claude will pick up `SKILL.md` automatically from `~/.claude/skills/gog-wrapper/`.
+
+### Install as an OpenClaw skill
+
+```sh
+# Install OpenClaw (requires Node 24 or 22.14+)
+npm install -g openclaw@latest
+openclaw onboard --install-daemon
+
+# Symlink this repo into the OpenClaw skills directory
+mkdir -p ~/.openclaw/skills
+ln -s "$(pwd)" ~/.openclaw/skills/gog-wrapper
+```
+
+OpenClaw hot-reloads skills — no restart needed after the symlink. To verify it loaded:
+
+```sh
+openclaw doctor
+```
+
+To enable the skill and pass required env vars, add to `~/.openclaw/openclaw.json`:
+
+```json5
+{
+  skills: {
+    entries: {
+      "gog-wrapper": {
+        enabled: true,
+        env: {
+          GOG_ACCOUNT: "you@gmail.com"
+        }
+      }
+    }
+  },
+  agents: {
+    defaults: {
+      skills: ["gog-wrapper"]
+    }
+  }
+}
 ```
 
 ## Account

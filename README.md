@@ -7,6 +7,44 @@ Bash wrappers around [`gogcli`](https://github.com/steipete/gogcli) for Google W
 - [`gogcli`](https://github.com/steipete/gogcli) installed as `gog` and in `PATH`
 - A `vars.local.sh` file (see [Configuration](#configuration))
 
+## Use as an AI skill
+
+### Claude Code
+
+Symlink this repo into Claude's skills directory so Claude picks it up automatically:
+
+```sh
+mkdir -p ~/.claude/skills
+ln -s "$(pwd)" ~/.claude/skills/gog-wrapper
+```
+
+### OpenClaw
+
+Symlink this repo into OpenClaw's skills directory:
+
+```sh
+mkdir -p ~/.openclaw/skills
+ln -s "$(pwd)" ~/.openclaw/skills/gog-wrapper
+```
+
+Then enable it in `~/.openclaw/openclaw.json`:
+
+```json5
+{
+  skills: {
+    entries: {
+      "gog-wrapper": {
+        enabled: true,
+        env: { GOG_ACCOUNT: "you@gmail.com" }
+      }
+    }
+  },
+  agents: {
+    defaults: { skills: ["gog-wrapper"] }
+  }
+}
+```
+
 ## Configuration
 
 Create `vars.local.sh` (gitignored — never committed) with your account:
